@@ -1,0 +1,3 @@
+recordings/
+*.json.part
+__pycache__/

@@ -162,7 +162,7 @@ body.drag .wrap { outline: 2px dashed var(--accent); outline-offset: 8px; border
     <span class="chip"><span id="padDot" class="dot"></span><span id="padText">No controller connected</span></span>
     <select id="padSel" aria-label="Controller to record" hidden></select>
   </div>
-  <p class="hint">Start or stop recording anytime: press <kbd>R</kbd>, click Record, or hold <kbd>Back</kbd> + <kbd>Start</kbd> on the controller for half a second.</p>
+  <p class="hint" id="hint">Start or stop recording anytime: press <kbd>R</kbd>, click Record, or hold <kbd>Back</kbd> + <kbd>Start</kbd> on the controller for half a second.</p>
   <p id="note" class="note" role="status" aria-live="polite"></p>
 
   <section class="bench">
@@ -258,7 +258,7 @@ body.drag .wrap { outline: 2px dashed var(--accent); outline-offset: 8px; border
   </section>
 
   <section class="panel">
-    <div class="libhead"><h2>Your recordings</h2><span class="meta">Kept in this browser only</span></div>
+    <div class="libhead"><h2>Your recordings</h2><span class="meta" id="libMeta">Kept in this browser only</span></div>
     <div id="lib" class="lib"></div>
   </section>
 
@@ -581,6 +581,7 @@ body.drag .wrap { outline: 2px dashed var(--accent); outline-offset: 8px; border
     return { t: Math.round(t), a, b };
   }
   function refreshPadList() {
+    if (desktop) return;
     const list = pads(), sel = $("#padSel");
     if (list.length && (padIndex === null || !list.some(p => p.index === padIndex))) padIndex = list[0].index;
     if (!list.length) padIndex = null;
@@ -674,6 +675,7 @@ body.drag .wrap { outline: 2px dashed var(--accent); outline-offset: 8px; border
       <button type="button" class="small danger" data-act="del">Delete</button></div>`).join("");
   }
   function loadLib() {
+    if (desktop) return api("/api/recordings").then(items => { libItems = items || []; renderLib(); }).catch(() => note("Couldn't load recordings from the desktop recorder.", true));
     return DB.all().then(items => { libItems = (items || []).sort((a, b) => b.createdAt - a.createdAt); renderLib(); })
       .catch(() => { libOK = false; renderLib(); });
   }
@@ -688,20 +690,19 @@ body.drag .wrap { outline: 2px dashed var(--accent); outline-offset: 8px; border
     const b = e.target.closest("button"); if (!b) return;
     const id = b.closest(".libitem").dataset.id, it = libItems.find(x => x.id === id); if (!it) return;
     if (b.dataset.act === "open") {
-      if (recording) stopRec(false);
-      currentId = id; setRecording(it.data, `<b>${esc(it.name)}</b>&nbsp;· ${fmt(it.duration)}`, "ok"); renderLib(); note("");
+      openItem(it);
     } else if (b.dataset.act === "del") {
       if (!b.classList.contains("armed")) {
         b.classList.add("armed"); b.textContent = "Confirm delete";
         setTimeout(() => { if (b.isConnected) { b.classList.remove("armed"); b.textContent = "Delete"; } }, 3000);
         return;
       }
-      DB.del(id).then(() => { if (currentId === id) currentId = null; return loadLib(); })
+      (desktop ? api("/api/recordings/" + encodeURIComponent(id), "DELETE") : DB.del(id)).then(() => { if (currentId === id) currentId = null; return loadLib(); })
         .then(() => note("Deleted " + it.name + "."), () => note("Couldn't delete that recording.", true));
     }
   });
 
-  $("#recBtn").addEventListener("click", () => (recording ? stopRec(false) : startRec()));
+  $("#recBtn").addEventListener("click", () => toggleRec());
 
   // ---------- files ----------
   function loadText(text, name) {
@@ -755,6 +756,67 @@ body.drag .wrap { outline: 2px dashed var(--accent); outline-offset: 8px; border
     try { navigator.clipboard.writeText(text).then(() => note("Copied the recording as JSON."), fallback); } catch (e) { fallback(); }
   });
 
+  function openItem(it) {
+    const go = data => { currentId = it.id; setRecording(data, `<b>${esc(it.name)}</b>&nbsp;· ${fmt(it.duration)}`, "ok"); renderLib(); note(""); };
+    if (desktop) api("/api/recordings/" + encodeURIComponent(it.id)).then(d => go(normalize(d))).catch(() => note("Couldn't open that recording.", true));
+    else { if (recording) stopRec(false); go(it.data); }
+  }
+
+  // ---------- desktop recorder (when this page is served by recorder.py) ----------
+  let desktop = false;
+  const remote = { recording: false, live: null, trail: [], lastSaved: null };
+  const api = (path, method) => fetch(path, method ? { method, headers: { "X-Recorder": "1" } } : { cache: "no-store" })
+    .then(r => r.json());
+  function toggleRec() {
+    if (!desktop) return recording ? stopRec(false) : startRec(false);
+    api(remote.recording ? "/api/record/stop" : "/api/record/start", "POST")
+      .then(st => { if (st.ok === false) note(st.message, true); })
+      .catch(() => note("Couldn't reach the desktop recorder. Is it still running?", true));
+  }
+  function pollStatus() {
+    api("/api/status").then(st => {
+      const was = remote.recording; remote.recording = st.recording;
+      const pad = st.controller || (st.controllers || [])[0];
+      $("#padDot").className = "dot " + (pad ? "ok" : "");
+      $("#padText").textContent = pad || "No controller connected";
+      $("#recBtn").textContent = st.recording ? "■ Stop" : "● Record";
+      $("#recBtn").classList.toggle("on", st.recording);
+      if (st.recording) {
+        $("#srcDot").className = "dot rec";
+        $("#srcText").innerHTML = `<b>Recording on this computer</b>&nbsp;· ${fmt(st.elapsed)}`;
+        if (!was) { remote.trail = []; note("Recording. It keeps going if you close this page or switch to your game."); }
+      } else if (was) {
+        note(st.message || "", !st.lastSaved || st.lastSaved === remote.lastSaved);
+        const fresh = st.lastSaved && st.lastSaved !== remote.lastSaved;
+        remote.lastSaved = st.lastSaved;
+        loadLib().then(() => {
+          const it = fresh && libItems.find(x => x.id === st.lastSaved);
+          if (it) { openItem(it); note(st.message || ""); }
+          else $("#srcDot").className = "dot ok";
+        });
+      }
+    }).catch(() => note("Lost contact with the desktop recorder. Start it again with: python recorder.py", true))
+      .finally(() => setTimeout(pollStatus, 500));
+  }
+  function pollLive() {
+    if (!remote.recording) return void setTimeout(pollLive, 250);
+    api("/api/live").then(d => {
+      remote.live = d.sample;
+      if (d.sample) { remote.trail.push(d.sample); if (remote.trail.length > 24) remote.trail.shift(); }
+    }).catch(() => {}).finally(() => setTimeout(pollLive, 40));
+  }
+  function enterDesktop(st) {
+    desktop = true; remote.lastSaved = st.lastSaved;
+    $("#libMeta").textContent = "Saved in " + st.folder;
+    $("#hint").innerHTML = "Desktop recorder connected. It records in the background, even while your game is fullscreen. Start or stop anytime: hold <kbd>Back</kbd> + <kbd>Start</kbd> on the controller, press <kbd>R</kbd> here, or click Record.";
+    $("#padSel").hidden = true;
+    loadLib().then(() => { if (libItems.length) openItem(libItems[0]); });
+    pollStatus(); pollLive();
+  }
+  if (/^https?:$/.test(location.protocol)) {
+    api("/api/status").then(st => { if (st && st.app === "controller-replay-recorder") enterDesktop(st); }).catch(() => {});
+  }
+
   // ---------- transport ----------
   const playBtn = $("#play"), scrub = $("#scrub");
   playBtn.addEventListener("click", () => {
@@ -771,7 +833,7 @@ body.drag .wrap { outline: 2px dashed var(--accent); outline-offset: 8px; border
   document.addEventListener("keydown", e => {
     if (e.target.closest && e.target.closest("input, select, textarea")) return;
     if ((e.key === "r" || e.key === "R") && !e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat) {
-      e.preventDefault(); recording ? stopRec(false) : startRec(false); return;
+      e.preventDefault(); toggleRec(); return;
     }
     if (!rec || recording) return;
     if (e.code === "Space") { e.preventDefault(); playBtn.click(); }
@@ -786,7 +848,7 @@ body.drag .wrap { outline: 2px dashed var(--accent); outline-offset: 8px; border
   function frame(now) {
     const dt = last == null ? 0 : now - last; last = now;
     let state, trail = [];
-    const live = padIndex === null ? null : pads().find(x => x.index === padIndex);
+    const live = desktop || padIndex === null ? null : pads().find(x => x.index === padIndex);
     handleCombo(live, now);
     if (recording) {
       const p = live;
@@ -804,6 +866,7 @@ body.drag .wrap { outline: 2px dashed var(--accent); outline-offset: 8px; border
       let j = k; while (j > 0 && rec.samples[j - 1].t >= playhead - 750) j--;
       trail = rec.samples.slice(j, k + 1);
     }
+    if (desktop && remote.recording && remote.live) { state = remote.live; trail = remote.trail; }
     if (state) drawPad(state, trail);
     overlay("traces"); overlay("lanes");
     if (!recording) markLog();
