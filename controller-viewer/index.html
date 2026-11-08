@@ -1,0 +1,716 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Controller Replay</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: an input-analysis bench. Controller diagram on the left, time traces on the right,
+   transport bar under both, then a lane per button and the press log. */
+:root {
+  --bg: #eceff3;
+  --panel: #fbfcfd;
+  --ink: #1a2029;
+  --muted: #5a6473;
+  --line: #d3d9e1;
+  --grid: #e4e8ee;
+  --accent: #2c56c9;
+  --ls: #c9731f;
+  --rs: #1a86a8;
+  --trig: #8d47c4;
+  --press: #2c56c9;
+  --press-ink: #ffffff;
+  --shell: #dde2e9;
+  --shell-line: #b4bcc7;
+  --cap: #2a313b;
+  --rec: #cf3535;
+  --display: "Chakra Petch", "Segoe UI", system-ui, sans-serif;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12151a; --panel: #1a1e25; --ink: #e5e9ef; --muted: #96a0ae; --line: #2b313a; --grid: #222831;
+    --accent: #7f9dff; --ls: #f0a052; --rs: #4dc2e5; --trig: #c08af0; --press: #7f9dff; --press-ink: #0d1016;
+    --shell: #252a32; --shell-line: #3b434e; --cap: #0c0e12; --rec: #ff6060; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12151a; --panel: #1a1e25; --ink: #e5e9ef; --muted: #96a0ae; --line: #2b313a; --grid: #222831;
+  --accent: #7f9dff; --ls: #f0a052; --rs: #4dc2e5; --trig: #c08af0; --press: #7f9dff; --press-ink: #0d1016;
+  --shell: #252a32; --shell-line: #3b434e; --cap: #0c0e12; --rec: #ff6060; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 var(--sans);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 20px 40px;
+}
+.wrap { max-width: 1280px; margin: 0 auto; display: grid; gap: 16px; }
+header { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 12px 24px; }
+h1 { font: 600 28px/1.1 var(--display); letter-spacing: 0.01em; margin: 0; text-wrap: balance; }
+.sub { color: var(--muted); margin: 4px 0 0; max-width: 62ch; }
+h2 { font: 600 13px/1 var(--display); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+button, select, .filebtn {
+  font: 500 13px/1 var(--sans); color: var(--ink); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; padding: 9px 12px; cursor: pointer; min-height: 36px;
+}
+button:hover, .filebtn:hover, select:hover { border-color: var(--muted); }
+button:focus-visible, select:focus-visible, .filebtn:focus-within, input[type=range]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--press-ink); }
+button.rec { color: var(--rec); border-color: var(--rec); }
+button.rec.on { background: var(--rec); color: #fff; }
+.filebtn { display: inline-flex; align-items: center; }
+.filebtn input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.status { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 4px 10px; color: var(--muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip b { color: var(--ink); font-weight: 600; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.ok { background: var(--rs); }
+.dot.rec { background: var(--rec); animation: blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .dot.rec { animation: none; } }
+.note { color: var(--muted); font-size: 13px; min-height: 1.5em; margin: 0; }
+.note.warn { color: var(--rec); }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: grid; gap: 12px; min-width: 0; align-content: start; }
+.bench { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 16px; }
+@media (max-width: 900px) { .bench { grid-template-columns: minmax(0, 1fr); } }
+#pad { width: 100%; height: auto; display: block; max-width: 100%; }
+#pad .shell { fill: var(--shell); stroke: var(--shell-line); stroke-width: 2; }
+#pad .btn { fill: var(--panel); stroke: var(--shell-line); stroke-width: 2; transition: fill 40ms; }
+#pad .btn.on { fill: var(--press); stroke: var(--press); }
+#pad .lbl { font: 600 13px var(--display); fill: var(--muted); text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+#pad .lbl.on { fill: var(--press-ink); }
+#pad .tlbl { font: 600 12px var(--display); fill: var(--muted); text-anchor: middle; pointer-events: none; }
+#pad .tlbl.on { fill: var(--press-ink); }
+#pad .well { fill: var(--panel); stroke: var(--shell-line); stroke-width: 2; }
+#pad .range { fill: none; stroke: var(--grid); stroke-width: 1.5; stroke-dasharray: 3 3; }
+#pad .pathall { fill: none; stroke-width: 1; stroke-linejoin: round; opacity: 0.28; }
+#pad .trail { fill: none; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; opacity: 0.9; }
+#pad .cap { fill: var(--cap); stroke: var(--shell-line); stroke-width: 2; }
+#pad .cap.on { fill: var(--press); stroke: var(--press); }
+#pad .tfill { opacity: 0.9; }
+.readouts { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
+@media (max-width: 520px) { .readouts { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.ro { display: grid; gap: 4px; }
+.ro span { font: 600 11px var(--display); letter-spacing: 0.08em; color: var(--muted); }
+.ro output { font: 500 15px var(--mono); font-variant-numeric: tabular-nums; }
+.bar { height: 4px; background: var(--grid); border-radius: 2px; position: relative; overflow: hidden; }
+.bar i { position: absolute; top: 0; bottom: 0; background: currentColor; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px 16px; margin: 0; }
+.stats div { display: grid; gap: 2px; }
+.stats dt { font-size: 12px; color: var(--muted); }
+.stats dd { margin: 0; font: 500 16px var(--mono); font-variant-numeric: tabular-nums; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--muted); }
+.legend i { display: inline-block; width: 18px; height: 0; border-top: 2px solid currentColor; vertical-align: middle; margin-right: 5px; }
+.legend i.dash { border-top-style: dashed; }
+canvas { display: block; width: 100%; touch-action: none; cursor: crosshair; }
+.transport { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.transport input[type=range] { flex: 1 1 240px; min-width: 0; accent-color: var(--accent); }
+.time { font: 500 15px var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+#play { min-width: 84px; }
+.lower { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 4fr); gap: 16px; }
+@media (max-width: 900px) { .lower { grid-template-columns: minmax(0, 1fr); } }
+.log { max-height: 360px; overflow: auto; border-top: 1px solid var(--line); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { position: sticky; top: 0; background: var(--panel); text-align: left; font: 600 11px var(--display); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); padding: 8px 6px; border-bottom: 1px solid var(--line); }
+td { padding: 5px 6px; border-bottom: 1px solid var(--grid); font-family: var(--mono); font-variant-numeric: tabular-nums; }
+tr.ev { cursor: pointer; }
+tr.ev:hover td { background: var(--grid); }
+tr.ev.past td { color: var(--muted); }
+.key { display: inline-block; min-width: 3.2em; font: 600 12px var(--display); border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; text-align: center; color: var(--ink); }
+.empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+.help { color: var(--muted); font-size: 13px; margin: 0; max-width: 70ch; }
+.help code { font-family: var(--mono); font-size: 12px; }
+body.drag .wrap { outline: 2px dashed var(--accent); outline-offset: 8px; border-radius: 10px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Controller Replay</h1>
+      <p class="sub">Record a gamepad session or load a recording, then scrub through every stick movement, trigger pull and button press.</p>
+    </div>
+    <div class="toolbar">
+      <button id="recBtn" class="rec" type="button">● Record</button>
+      <label class="filebtn">Open recording…<input id="file" type="file" accept=".json,application/json"></label>
+      <button id="sampleBtn" type="button">Load sample</button>
+      <button id="saveBtn" type="button">Save .json</button>
+      <button id="copyBtn" type="button">Copy JSON</button>
+    </div>
+  </header>
+
+  <div class="status">
+    <span class="chip"><span id="srcDot" class="dot"></span><span id="srcText">Sample recording</span></span>
+    <span class="chip"><span id="padDot" class="dot"></span><span id="padText">No controller connected</span></span>
+    <select id="padSel" aria-label="Controller to record" hidden></select>
+  </div>
+  <p id="note" class="note" role="status" aria-live="polite"></p>
+
+  <section class="bench">
+    <div class="panel">
+      <h2>Controller</h2>
+      <svg id="pad" viewBox="0 0 600 390" role="img" aria-label="Controller state at the current time">
+        <defs>
+          <clipPath id="clipLT"><rect x="130" y="12" width="90" height="42" rx="12"/></clipPath>
+          <clipPath id="clipRT"><rect x="380" y="12" width="90" height="42" rx="12"/></clipPath>
+        </defs>
+        <rect class="btn" x="130" y="12" width="90" height="42" rx="12" id="b6"/>
+        <rect class="tfill" id="fill6" x="130" y="12" width="0" height="42" clip-path="url(#clipLT)" fill="var(--trig)"/>
+        <text class="tlbl" id="l6" x="175" y="38">LT</text>
+        <rect class="btn" x="380" y="12" width="90" height="42" rx="12" id="b7"/>
+        <rect class="tfill" id="fill7" x="380" y="12" width="0" height="42" clip-path="url(#clipRT)" fill="var(--trig)"/>
+        <text class="tlbl" id="l7" x="425" y="38">RT</text>
+        <rect class="btn" x="118" y="62" width="118" height="24" rx="12" id="b4"/>
+        <text class="lbl" id="l4" x="177" y="74">LB</text>
+        <rect class="btn" x="364" y="62" width="118" height="24" rx="12" id="b5"/>
+        <text class="lbl" id="l5" x="423" y="74">RB</text>
+        <path class="shell" d="M150,92 C112,92 84,110 74,150 L42,288 C30,340 62,378 104,372 C140,367 162,332 188,302 L412,302 C438,332 460,367 496,372 C538,378 570,340 558,288 L526,150 C516,110 488,92 450,92 Z"/>
+        <g transform="translate(175,165)">
+          <circle class="well" r="46"/>
+          <circle class="range" r="28"/>
+          <polyline id="pathL" class="pathall" stroke="var(--ls)" points=""/>
+          <polyline id="trailL" class="trail" stroke="var(--ls)" points=""/>
+          <circle id="b10" class="cap" r="19"/>
+        </g>
+        <g transform="translate(360,245)">
+          <circle class="well" r="46"/>
+          <circle class="range" r="28"/>
+          <polyline id="pathR" class="pathall" stroke="var(--rs)" points=""/>
+          <polyline id="trailR" class="trail" stroke="var(--rs)" points=""/>
+          <circle id="b11" class="cap" r="19"/>
+        </g>
+        <rect class="btn" x="228" y="233" width="24" height="24" fill="var(--panel)" style="stroke:none"/>
+        <rect class="btn" id="b12" x="228" y="207" width="24" height="28" rx="4"/>
+        <rect class="btn" id="b13" x="228" y="255" width="24" height="28" rx="4"/>
+        <rect class="btn" id="b14" x="200" y="233" width="28" height="24" rx="4"/>
+        <rect class="btn" id="b15" x="252" y="233" width="28" height="24" rx="4"/>
+        <circle class="btn" id="b3" cx="425" cy="128" r="18"/><text class="lbl" id="l3" x="425" y="128">Y</text>
+        <circle class="btn" id="b2" cx="388" cy="165" r="18"/><text class="lbl" id="l2" x="388" y="165">X</text>
+        <circle class="btn" id="b1" cx="462" cy="165" r="18"/><text class="lbl" id="l1" x="462" y="165">B</text>
+        <circle class="btn" id="b0" cx="425" cy="202" r="18"/><text class="lbl" id="l0" x="425" y="202">A</text>
+        <rect class="btn" id="b8" x="244" y="146" width="34" height="18" rx="9"/>
+        <rect class="btn" id="b9" x="322" y="146" width="34" height="18" rx="9"/>
+        <circle class="btn" id="b16" cx="300" cy="196" r="15"/>
+      </svg>
+      <div class="readouts" id="readouts"></div>
+      <dl class="stats" id="stats"></dl>
+    </div>
+
+    <div class="panel">
+      <h2>Stick and trigger traces</h2>
+      <div class="legend">
+        <span style="color:var(--ls)"><i></i>Left X</span>
+        <span style="color:var(--ls)"><i class="dash"></i>Left Y</span>
+        <span style="color:var(--rs)"><i></i>Right X</span>
+        <span style="color:var(--rs)"><i class="dash"></i>Right Y</span>
+        <span style="color:var(--trig)"><i></i>LT</span>
+        <span style="color:var(--trig)"><i class="dash"></i>RT</span>
+      </div>
+      <canvas id="traces" aria-label="Stick axes and triggers over time. Click to jump to a moment."></canvas>
+    </div>
+  </section>
+
+  <div class="panel transport">
+    <button id="play" class="primary" type="button">▶ Play</button>
+    <input id="scrub" type="range" min="0" max="1000" step="1" value="0" aria-label="Playback position">
+    <span class="time"><span id="tNow">00:00.00</span> / <span id="tDur">00:00.00</span></span>
+    <select id="speed" aria-label="Playback speed">
+      <option value="0.25">0.25×</option>
+      <option value="0.5">0.5×</option>
+      <option value="1" selected>1×</option>
+      <option value="2">2×</option>
+    </select>
+  </div>
+
+  <section class="lower">
+    <div class="panel">
+      <h2>Button lanes</h2>
+      <canvas id="lanes" aria-label="When each button was held. Click to jump to a moment."></canvas>
+    </div>
+    <div class="panel">
+      <h2>Press log</h2>
+      <div class="log">
+        <table>
+          <thead><tr><th>Time</th><th>Button</th><th>Held</th></tr></thead>
+          <tbody id="logBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <p class="help">Space plays or pauses. Left and right arrows step one frame; hold Shift to step one second. Drop a recording <code>.json</code> anywhere on the page, or paste its text. Recordings use the browser's standard controller layout, so the labels match Xbox-style pads; other pads map to the same positions.</p>
+</div>
+
+<script>
+(() => {
+  const BTN = ["A", "B", "X", "Y", "LB", "RB", "LT", "RT", "Back", "Start", "L3", "R3", "Up", "Down", "Left", "Right", "Home"];
+  const NB = 17;
+  const thresh = i => (i === 6 || i === 7 ? 0.1 : 0.5);
+  const R = 28; // stick throw radius in the diagram
+  const $ = s => document.querySelector(s);
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+  const r3 = v => Math.round(v * 1000) / 1000;
+  const fmt = ms => {
+    ms = Math.max(0, ms);
+    const m = Math.floor(ms / 60000), s = (ms % 60000) / 1000;
+    return String(m).padStart(2, "0") + ":" + s.toFixed(2).padStart(5, "0");
+  };
+  const tokens = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+  let rec = null, segs = [], events = [], cacheVer = 0;
+  let playhead = 0, playing = false, speed = 1, last = null;
+  let recording = false, recStart = 0, lastAnalyze = 0;
+  let liveOK = typeof navigator.getGamepads === "function";
+  let padIndex = null;
+
+  const note = (msg, warn) => { const n = $("#note"); n.textContent = msg || ""; n.classList.toggle("warn", !!warn); };
+  const dur = () => (rec && rec.samples.length ? rec.samples[rec.samples.length - 1].t : 0);
+
+  // ---------- sample recording ----------
+  function makeSample() {
+    let seed = 11;
+    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    const D = 12000, step = 1000 / 60;
+    const presses = [];
+    for (let t = 650; t < D - 400; t += 950 + rnd() * 650) presses.push([0, t, t + 110 + rnd() * 90]);
+    for (let t = 1600; t < D - 600; t += 2400 + rnd() * 800) { presses.push([2, t, t + 90]); presses.push([2, t + 230, t + 320]); }
+    presses.push([4, 3150, 3520], [5, 7600, 7880], [3, 5200, 5340], [1, 9300, 9430], [10, 2050, 2700],
+      [12, 10150, 10260], [15, 10420, 10530], [13, 10700, 10800], [14, 10980, 11090], [9, 11550, 11700]);
+    const ramps = { 6: [[3900, 6000]], 7: [[4100, 5300], [8200, 9050]] };
+    const flicks = []; for (let t = 300; t < D; t += 500 + rnd() * 700) {
+      const a = rnd() * Math.PI * 2, m = rnd() < 0.3 ? 0 : 0.4 + rnd() * 0.6;
+      flicks.push([t, Math.cos(a) * m, Math.sin(a) * m]);
+    }
+    const trig = (list, t) => { let v = 0; for (const [a, b] of list || []) {
+      if (t >= a && t <= b) v = Math.max(v, Math.min(1, (t - a) / 160, (b - t) / 110)); }
+      return clamp(v, 0, 1); };
+    const samples = []; let rx = 0, ry = 0;
+    for (let t = 0; t <= D; t += step) {
+      const env = t < 400 ? t / 400 : (t > 6100 && t < 7000) ? 0 : (t > 10000) ? Math.max(0, 1 - (t - 10000) / 300) : 1;
+      let lx = Math.sin(t * 0.0013) * 0.95 * env + Math.sin(t * 0.007) * 0.05 * env;
+      let ly = -Math.abs(Math.cos(t * 0.0006)) * 0.9 * env + Math.sin(t * 0.0021) * 0.25 * env;
+      const lm = Math.hypot(lx, ly); if (lm > 1) { lx /= lm; ly /= lm; }
+      let target = [0, 0]; for (const f of flicks) if (f[0] <= t) target = [f[1], f[2]];
+      rx += (target[0] - rx) * 0.22; ry += (target[1] - ry) * 0.22;
+      const b = new Array(NB).fill(0);
+      for (const [i, a, z] of presses) if (t >= a && t < z) b[i] = 1;
+      b[6] = r3(trig(ramps[6], t)); b[7] = r3(trig(ramps[7], t));
+      samples.push({ t: Math.round(t), a: [r3(lx), r3(ly), r3(rx), r3(ry)], b });
+    }
+    return { version: 1, controller: "Sample recording (generated)", mapping: "standard", recordedAt: null, samples };
+  }
+
+  // ---------- loading and analysis ----------
+  function normalize(obj) {
+    const list = Array.isArray(obj) ? obj : obj && obj.samples;
+    if (!Array.isArray(list) || !list.length) throw new Error("The file has no samples. Expected an object with a \"samples\" list.");
+    const t0 = Number(list[0].t ?? list[0].time ?? 0);
+    const samples = list.map((s, k) => {
+      const t = Number(s.t ?? s.time); const a = s.a ?? s.axes; const b = s.b ?? s.buttons;
+      if (!Number.isFinite(t) || !Array.isArray(a) || !Array.isArray(b)) throw new Error("Sample " + (k + 1) + " is missing t, a (axes) or b (buttons).");
+      const bb = new Array(NB).fill(0); b.slice(0, NB).forEach((v, i) => bb[i] = typeof v === "object" ? Number(v.value ?? (v.pressed ? 1 : 0)) : Number(v) || 0);
+      const aa = [0, 0, 0, 0]; a.slice(0, 4).forEach((v, i) => aa[i] = clamp(Number(v) || 0, -1, 1));
+      return { t: t - t0, a: aa, b: bb };
+    }).sort((x, y) => x.t - y.t);
+    return { version: 1, controller: (obj && obj.controller) || "Unknown controller", mapping: (obj && obj.mapping) || "standard", recordedAt: (obj && obj.recordedAt) || null, samples };
+  }
+
+  function idxAt(t) {
+    const S = rec.samples; let lo = 0, hi = S.length - 1;
+    if (t <= S[0].t) return 0;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (S[mid].t <= t) lo = mid; else hi = mid - 1; }
+    return lo;
+  }
+
+  function analyze() {
+    const S = rec.samples;
+    segs = Array.from({ length: NB }, () => []);
+    const open = new Array(NB).fill(-1);
+    for (const s of S) for (let i = 0; i < NB; i++) {
+      const on = (s.b[i] || 0) >= thresh(i);
+      if (on && open[i] < 0) open[i] = s.t;
+      else if (!on && open[i] >= 0) { segs[i].push([open[i], s.t]); open[i] = -1; }
+    }
+    const end = dur(); open.forEach((st, i) => { if (st >= 0) segs[i].push([st, end]); });
+    events = [];
+    segs.forEach((l, i) => l.forEach(([a, b]) => events.push({ t: a, i, d: b - a })));
+    events.sort((x, y) => x.t - y.t || x.i - y.i);
+
+    let lAct = 0, rAct = 0, ltMax = 0, rtMax = 0;
+    for (let k = 1; k < S.length; k++) {
+      const dt = S[k].t - S[k - 1].t, p = S[k - 1];
+      if (Math.hypot(p.a[0], p.a[1]) > 0.2) lAct += dt;
+      if (Math.hypot(p.a[2], p.a[3]) > 0.2) rAct += dt;
+    }
+    for (const s of S) { ltMax = Math.max(ltMax, s.b[6]); rtMax = Math.max(rtMax, s.b[7]); }
+    const counts = segs.map(l => l.length);
+    const top = counts.reduce((best, c, i) => (c > counts[best] ? i : best), 0);
+    const D = dur() || 1;
+    const stat = [
+      ["Length", fmt(dur())],
+      ["Samples", S.length.toLocaleString()],
+      ["Button presses", events.length.toLocaleString()],
+      ["Most pressed", counts[top] ? BTN[top] + " ×" + counts[top] : "None"],
+      ["Left stick moving", Math.round(lAct / D * 100) + "%"],
+      ["Right stick moving", Math.round(rAct / D * 100) + "%"],
+    ];
+    $("#stats").innerHTML = stat.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("");
+    renderLog();
+  }
+
+  function renderLog() {
+    const body = $("#logBody");
+    if (!events.length) { body.innerHTML = `<tr><td colspan="3" class="empty">No button presses in this recording.</td></tr>`; return; }
+    body.innerHTML = events.map((e, k) =>
+      `<tr class="ev" data-k="${k}" data-t="${e.t}"><td>${fmt(e.t)}</td><td><span class="key">${BTN[e.i]}</span></td><td>${(e.d / 1000).toFixed(2)} s</td></tr>`).join("");
+    lastPast = -2;
+  }
+  let lastPast = -2;
+  function markLog() {
+    if (!events.length) return;
+    let n = 0; while (n < events.length && events[n].t <= playhead) n++;
+    if (n === lastPast) return; lastPast = n;
+    const rows = $("#logBody").children;
+    for (let k = 0; k < rows.length; k++) rows[k].classList.toggle("past", k < n);
+  }
+
+  function setRecording(r, label, dotClass) {
+    rec = r; playhead = 0; playing = false;
+    analyze(); buildPaths(); rebuildCaches();
+    $("#srcText").innerHTML = label; $("#srcDot").className = "dot " + (dotClass || "");
+  }
+
+  // ---------- diagram ----------
+  const svgEls = {};
+  for (let i = 0; i < NB; i++) { svgEls[i] = document.getElementById("b" + i); svgEls["l" + i] = document.getElementById("l" + i); }
+  const ro = $("#readouts");
+  const RO = [["LX", "--ls", true], ["LY", "--ls", true], ["RX", "--rs", true], ["RY", "--rs", true], ["LT", "--trig", false], ["RT", "--trig", false]];
+  ro.innerHTML = RO.map(([k, c]) => `<div class="ro"><span>${k}</span><output id="ro${k}">0.000</output><div class="bar" style="color:var(${c})"><i id="bar${k}"></i></div></div>`).join("");
+
+  function buildPaths() {
+    const S = rec.samples, stepN = Math.max(1, Math.ceil(S.length / 1500));
+    let pl = "", pr = "";
+    for (let k = 0; k < S.length; k += stepN) {
+      const a = S[k].a;
+      pl += (a[0] * R).toFixed(1) + "," + (a[1] * R).toFixed(1) + " ";
+      pr += (a[2] * R).toFixed(1) + "," + (a[3] * R).toFixed(1) + " ";
+    }
+    $("#pathL").setAttribute("points", pl); $("#pathR").setAttribute("points", pr);
+  }
+
+  function drawPad(s, trail) {
+    for (let i = 0; i < NB; i++) {
+      const v = s.b[i] || 0, on = v >= thresh(i);
+      if (svgEls[i]) svgEls[i].classList.toggle("on", on && i !== 6 && i !== 7);
+      if (svgEls["l" + i]) svgEls["l" + i].classList.toggle("on", on);
+    }
+    $("#fill6").setAttribute("width", (90 * s.b[6]).toFixed(1));
+    $("#fill7").setAttribute("width", (90 * s.b[7]).toFixed(1));
+    svgEls[10].setAttribute("cx", (s.a[0] * R).toFixed(1)); svgEls[10].setAttribute("cy", (s.a[1] * R).toFixed(1));
+    svgEls[11].setAttribute("cx", (s.a[2] * R).toFixed(1)); svgEls[11].setAttribute("cy", (s.a[3] * R).toFixed(1));
+    let tl = "", tr = "";
+    for (const p of trail) { tl += (p.a[0] * R).toFixed(1) + "," + (p.a[1] * R).toFixed(1) + " "; tr += (p.a[2] * R).toFixed(1) + "," + (p.a[3] * R).toFixed(1) + " "; }
+    $("#trailL").setAttribute("points", tl); $("#trailR").setAttribute("points", tr);
+    const vals = [s.a[0], s.a[1], s.a[2], s.a[3], s.b[6], s.b[7]];
+    RO.forEach(([k, , bi], n) => {
+      const v = vals[n] || 0;
+      document.getElementById("ro" + k).textContent = (v < 0 ? "−" : bi ? "+" : "") + Math.abs(v).toFixed(3);
+      const bar = document.getElementById("bar" + k);
+      if (bi) { bar.style.left = (50 + Math.min(0, v) * 50) + "%"; bar.style.width = Math.abs(v) * 50 + "%"; }
+      else { bar.style.left = "0"; bar.style.width = v * 100 + "%"; }
+    });
+  }
+
+  // ---------- canvases ----------
+  const GUT = 60, PADR = 24;
+  const cv = { traces: $("#traces"), lanes: $("#lanes") };
+  const cache = {};
+  const xOf = (t, w) => GUT + (t / (dur() || 1)) * (w - GUT - PADR);
+  const tOf = (x, w) => clamp((x - GUT) / (w - GUT - PADR), 0, 1) * dur();
+  function tickStep(d) { for (const s of [100, 250, 500, 1000, 2000, 5000, 10000, 15000, 30000, 60000, 120000, 300000]) if (d / s <= 8) return s; return 600000; }
+
+  function sized(c, h) {
+    const dpr = window.devicePixelRatio || 1, w = Math.max(200, c.clientWidth);
+    c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); c.style.height = h + "px";
+    const off = document.createElement("canvas"); off.width = c.width; off.height = c.height;
+    const ctx = off.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { off, ctx, w, h, dpr };
+  }
+  function timeGrid(ctx, w, top, bottom, labels) {
+    const d = dur(); if (!d) return;
+    const st = tickStep(d), C = { grid: tokens("--grid"), muted: tokens("--muted") };
+    ctx.font = "11px " + tokens("--mono"); ctx.textAlign = "center"; ctx.textBaseline = "top";
+    for (let t = 0; t <= d + 1; t += st) {
+      const x = Math.round(xOf(t, w)) + 0.5;
+      ctx.strokeStyle = C.grid; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bottom); ctx.stroke();
+      if (labels) { ctx.fillStyle = C.muted; ctx.fillText(st < 1000 ? (t / 1000).toFixed(st < 500 ? 2 : 1) + "s" : fmt(t).replace(/\.00$/, ""), x, bottom + 4); }
+    }
+  }
+
+  function buildTraces() {
+    const ROW = 70, LAB = 22, GAP = 8, AX = 20;
+    const rows = [
+      { name: "Left stick", min: -1, max: 1, lines: [[s => s.a[0], "--ls", []], [s => s.a[1], "--ls", [5, 4]]] },
+      { name: "Right stick", min: -1, max: 1, lines: [[s => s.a[2], "--rs", []], [s => s.a[3], "--rs", [5, 4]]] },
+      { name: "Triggers", min: 0, max: 1, lines: [[s => s.b[6], "--trig", []], [s => s.b[7], "--trig", [5, 4]]] },
+    ];
+    const H = rows.length * (ROW + LAB + GAP) + AX;
+    const c = sized(cv.traces, H), ctx = c.ctx, w = c.w;
+    const muted = tokens("--muted"), line = tokens("--line");
+    timeGrid(ctx, w, 0, H - AX, true);
+    const S = rec.samples, n = S.length;
+    rows.forEach((r, ri) => {
+      const top = ri * (ROW + LAB + GAP) + LAB, bot = top + ROW;
+      const y = v => bot - ((v - r.min) / (r.max - r.min)) * ROW;
+      ctx.fillStyle = muted; ctx.font = "600 11px " + tokens("--display"); ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+      ctx.fillText(r.name.toUpperCase(), GUT, top - 6);
+      ctx.font = "10px " + tokens("--mono"); ctx.textAlign = "right"; ctx.textBaseline = "middle";
+      const marks = r.min < 0 ? [1, 0, -1] : [1, 0];
+      for (const m of marks) {
+        const yy = Math.round(y(m)) + 0.5;
+        ctx.strokeStyle = line; ctx.lineWidth = 1; ctx.setLineDash(m === 0 && r.min < 0 ? [2, 3] : []);
+        ctx.beginPath(); ctx.moveTo(GUT, yy); ctx.lineTo(w - PADR, yy); ctx.stroke();
+        ctx.fillStyle = muted; ctx.fillText((m > 0 && r.min < 0 ? "+" : "") + m, GUT - 8, yy);
+      }
+      ctx.setLineDash([]);
+      for (const [get, col, dash] of r.lines) {
+        ctx.strokeStyle = tokens(col); ctx.lineWidth = 1.5; ctx.setLineDash(dash); ctx.lineJoin = "round";
+        ctx.beginPath();
+        // one min/max pair per pixel column keeps long recordings fast and faithful
+        const px = w - GUT - PADR, per = n / px;
+        if (per > 2) {
+          for (let x = 0; x < px; x++) {
+            let mn = Infinity, mx = -Infinity;
+            const a = Math.floor(x * per), b = Math.min(n, Math.floor((x + 1) * per));
+            for (let k = a; k < b; k++) { const v = get(S[k]); if (v < mn) mn = v; if (v > mx) mx = v; }
+            if (mn === Infinity) continue;
+            const xx = GUT + x + 0.5;
+            if (x === 0) ctx.moveTo(xx, y(mn)); else ctx.lineTo(xx, y(mn));
+            ctx.lineTo(xx, y(mx));
+          }
+        } else {
+          S.forEach((s, k) => { const xx = xOf(s.t, w), yy = y(get(s)); if (k) ctx.lineTo(xx, yy); else ctx.moveTo(xx, yy); });
+        }
+        ctx.stroke(); ctx.setLineDash([]);
+      }
+    });
+    cache.traces = { ...c, H, AX };
+  }
+
+  function buildLanes() {
+    const used = []; for (let i = 0; i < NB; i++) if (segs[i].length && i !== 6 && i !== 7) used.push(i);
+    if (segs[6].length) used.push(6); if (segs[7].length) used.push(7);
+    const ROW = 20, AX = 20, H = Math.max(1, used.length) * ROW + AX + 4;
+    const c = sized(cv.lanes, H), ctx = c.ctx, w = c.w;
+    timeGrid(ctx, w, 0, H - AX, true);
+    const muted = tokens("--muted"), press = tokens("--press"), trig = tokens("--trig");
+    ctx.textBaseline = "middle";
+    if (!used.length) {
+      ctx.fillStyle = muted; ctx.font = "13px " + tokens("--sans"); ctx.textAlign = "left";
+      ctx.fillText("No buttons pressed", GUT, ROW / 2 + 2);
+    }
+    used.forEach((i, r) => {
+      const y = r * ROW + 2;
+      ctx.fillStyle = muted; ctx.font = "600 11px " + tokens("--display"); ctx.textAlign = "right";
+      ctx.fillText(BTN[i], GUT - 8, y + ROW / 2);
+      ctx.fillStyle = i === 6 || i === 7 ? trig : press;
+      for (const [a, b] of segs[i]) {
+        const x0 = xOf(a, w), x1 = Math.max(x0 + 2, xOf(b, w));
+        ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x0, y + 4, x1 - x0, ROW - 8, 3) : ctx.rect(x0, y + 4, x1 - x0, ROW - 8); ctx.fill();
+      }
+    });
+    cache.lanes = { ...c, H, AX };
+  }
+
+  function rebuildCaches() { if (!rec) return; buildTraces(); buildLanes(); cacheVer++; }
+
+  function overlay(name) {
+    const c = cache[name]; if (!c) return;
+    const ctx = cv[name].getContext("2d");
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, cv[name].width, cv[name].height);
+    ctx.drawImage(c.off, 0, 0);
+    ctx.setTransform(c.dpr, 0, 0, c.dpr, 0, 0);
+    if (!dur()) return;
+    const x = Math.round(xOf(recording ? dur() : playhead, c.w)) + 0.5;
+    ctx.strokeStyle = tokens("--ink"); ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, c.H - c.AX); ctx.stroke();
+  }
+
+  for (const name of ["traces", "lanes"]) {
+    const c = cv[name]; let dragging = false;
+    const seek = e => { if (!rec || recording) return; const r = c.getBoundingClientRect(); playhead = tOf(e.clientX - r.left, r.width); };
+    c.addEventListener("pointerdown", e => { dragging = true; c.setPointerCapture(e.pointerId); seek(e); });
+    c.addEventListener("pointermove", e => { if (dragging) seek(e); });
+    c.addEventListener("pointerup", () => { dragging = false; });
+  }
+
+  // ---------- live controller ----------
+  function pads() {
+    if (!liveOK) return [];
+    try { return Array.from(navigator.getGamepads() || []).filter(Boolean); }
+    catch (e) { liveOK = false; return []; }
+  }
+  function padSample(p, t) {
+    const b = new Array(NB).fill(0);
+    p.buttons.slice(0, NB).forEach((x, i) => b[i] = r3(typeof x === "object" ? (x.value || (x.pressed ? 1 : 0)) : x));
+    const a = [0, 0, 0, 0]; p.axes.slice(0, 4).forEach((v, i) => a[i] = r3(v));
+    return { t: Math.round(t), a, b };
+  }
+  function refreshPadList() {
+    const list = pads(), sel = $("#padSel");
+    if (list.length && (padIndex === null || !list.some(p => p.index === padIndex))) padIndex = list[0].index;
+    if (!list.length) padIndex = null;
+    sel.hidden = list.length < 2;
+    sel.innerHTML = list.map(p => `<option value="${p.index}" ${p.index === padIndex ? "selected" : ""}>${p.id.replace(/</g, "&lt;")}</option>`).join("");
+    const cur = list.find(p => p.index === padIndex);
+    $("#padDot").className = "dot " + (cur ? "ok" : "");
+    $("#padText").textContent = cur ? cur.id.replace(/\s*\(.*\)\s*$/, "") || "Controller connected" : (liveOK ? "No controller connected" : "Controller access blocked here");
+  }
+  window.addEventListener("gamepadconnected", () => { refreshPadList(); if (!recording) note("Controller connected. Press Record to capture a session."); });
+  window.addEventListener("gamepaddisconnected", () => { refreshPadList(); if (recording) stopRec(true); });
+  $("#padSel").addEventListener("change", e => { padIndex = Number(e.target.value); refreshPadList(); });
+
+  function startRec() {
+    refreshPadList();
+    const p = pads().find(x => x.index === padIndex);
+    if (!p) {
+      note(liveOK
+        ? "No controller found. Plug one in and press any button on it, then press Record again. If it still doesn't appear, this view may block controller access: open controller-viewer/index.html from the repository directly in Chrome, Edge or Firefox."
+        : "This view blocks controller access. Open controller-viewer/index.html from the repository directly in Chrome, Edge or Firefox to record, then open the saved file here.", true);
+      return;
+    }
+    recording = true; playing = false; recStart = performance.now(); lastAnalyze = 0;
+    rec = { version: 1, controller: p.id, mapping: p.mapping || "unknown", recordedAt: new Date().toISOString(), samples: [padSample(p, 0)] };
+    analyze(); buildPaths(); rebuildCaches();
+    $("#recBtn").textContent = "■ Stop"; $("#recBtn").classList.add("on");
+    $("#srcDot").className = "dot rec";
+    note(p.mapping === "standard" ? "Recording. Press Stop when you're done." : "Recording. This controller doesn't report the standard layout, so some labels may not match its buttons.");
+  }
+  function stopRec(lost) {
+    recording = false;
+    $("#recBtn").textContent = "● Record"; $("#recBtn").classList.remove("on");
+    setRecording(rec, `<b>Your recording</b>&nbsp;· ${fmt(dur())}`, "ok");
+    note(lost ? "The controller disconnected, so recording stopped. What was captured is kept below." : "Recording stopped. Save it as .json to keep it; it is not stored anywhere else.", lost);
+  }
+  $("#recBtn").addEventListener("click", () => (recording ? stopRec(false) : startRec()));
+
+  // ---------- files ----------
+  function loadText(text, name) {
+    try {
+      const r = normalize(JSON.parse(text));
+      if (recording) stopRec(false);
+      setRecording(r, `<b>${(name || "Pasted recording").replace(/</g, "&lt;")}</b>&nbsp;· ${fmt(r.samples[r.samples.length - 1].t)}`, "ok");
+      note("Loaded " + r.samples.length.toLocaleString() + " samples from " + (r.controller || "a controller") + ".");
+    } catch (e) {
+      note("Couldn't open that recording. " + (e instanceof SyntaxError ? "The file isn't valid JSON." : e.message), true);
+    }
+  }
+  $("#file").addEventListener("change", e => {
+    const f = e.target.files[0]; if (!f) return;
+    f.text().then(t => loadText(t, f.name)); e.target.value = "";
+  });
+  document.addEventListener("dragover", e => { e.preventDefault(); document.body.classList.add("drag"); });
+  document.addEventListener("dragleave", e => { if (e.target === document.documentElement || !e.relatedTarget) document.body.classList.remove("drag"); });
+  document.addEventListener("drop", e => {
+    e.preventDefault(); document.body.classList.remove("drag");
+    const f = e.dataTransfer.files[0]; if (f) f.text().then(t => loadText(t, f.name));
+  });
+  document.addEventListener("paste", e => {
+    const t = e.clipboardData && e.clipboardData.getData("text");
+    if (t && /^\s*[\[{]/.test(t)) loadText(t, "Pasted recording");
+  });
+  $("#sampleBtn").addEventListener("click", () => { if (recording) stopRec(false); setRecording(makeSample(), "<b>Sample recording</b>&nbsp;· generated example", ""); note(""); });
+
+  const json = () => JSON.stringify(rec);
+  $("#saveBtn").addEventListener("click", () => {
+    if (!rec || recording) { note("Stop recording before saving.", true); return; }
+    try {
+      const url = URL.createObjectURL(new Blob([json()], { type: "application/json" }));
+      const d = new Date(), pad2 = n => String(n).padStart(2, "0");
+      const a = document.createElement("a"); a.href = url;
+      a.download = `controller-recording-${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(d.getMinutes())}.json`;
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 4000);
+      note("Saving the file. If nothing downloads, this view blocks downloads: use Copy JSON and paste it into a .json file.");
+    } catch (e) { note("This view can't save files. Use Copy JSON instead.", true); }
+  });
+  $("#copyBtn").addEventListener("click", () => {
+    if (!rec || recording) { note("Stop recording before copying.", true); return; }
+    const text = json();
+    const fallback = () => {
+      const ta = document.createElement("textarea"); ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      let ok = false; try { ok = document.execCommand("copy"); } catch (e) {}
+      ta.remove(); note(ok ? "Copied the recording as JSON." : "Couldn't copy here. Use Save .json instead.", !ok);
+    };
+    try { navigator.clipboard.writeText(text).then(() => note("Copied the recording as JSON."), fallback); } catch (e) { fallback(); }
+  });
+
+  // ---------- transport ----------
+  const playBtn = $("#play"), scrub = $("#scrub");
+  playBtn.addEventListener("click", () => {
+    if (!rec || recording) return;
+    if (!playing && playhead >= dur()) playhead = 0;
+    playing = !playing;
+  });
+  scrub.addEventListener("input", () => { if (!rec || recording) return; playhead = Number(scrub.value); playing = false; });
+  $("#speed").addEventListener("change", e => { speed = Number(e.target.value); });
+  $("#logBody").addEventListener("click", e => {
+    const tr = e.target.closest("tr.ev"); if (!tr || recording) return;
+    playhead = Number(tr.dataset.t); playing = false;
+  });
+  document.addEventListener("keydown", e => {
+    if (e.target.closest("input, select, textarea") || !rec || recording) return;
+    if (e.code === "Space") { e.preventDefault(); playBtn.click(); }
+    else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+      e.preventDefault(); playing = false;
+      const step = e.shiftKey ? 1000 : (dur() / Math.max(1, rec.samples.length - 1)) || 16.7;
+      playhead = clamp(playhead + (e.key === "ArrowRight" ? step : -step), 0, dur());
+    }
+  });
+
+  // ---------- main loop ----------
+  function frame(now) {
+    const dt = last == null ? 0 : now - last; last = now;
+    let state, trail = [];
+    if (recording) {
+      const p = pads().find(x => x.index === padIndex);
+      if (p) { const s = padSample(p, now - recStart); rec.samples.push(s); state = s; }
+      else state = rec.samples[rec.samples.length - 1];
+      trail = rec.samples.slice(-45);
+      if (now - lastAnalyze > 300) { lastAnalyze = now; analyze(); buildPaths(); rebuildCaches(); $("#srcText").innerHTML = `<b>Recording</b>&nbsp;· ${fmt(dur())}`; }
+      playhead = dur();
+    } else if (rec) {
+      if (playing) { playhead += dt * speed; if (playhead >= dur()) { playhead = dur(); playing = false; } }
+      const k = idxAt(playhead); state = rec.samples[k];
+      let j = k; while (j > 0 && rec.samples[j - 1].t >= playhead - 750) j--;
+      trail = rec.samples.slice(j, k + 1);
+    }
+    if (state) drawPad(state, trail);
+    overlay("traces"); overlay("lanes");
+    if (!recording) markLog();
+    scrub.max = String(Math.max(1, Math.round(dur())));
+    if (document.activeElement !== scrub || playing) scrub.value = String(Math.round(playhead));
+    $("#tNow").textContent = fmt(playhead); $("#tDur").textContent = fmt(dur());
+    playBtn.textContent = playing ? "❚❚ Pause" : "▶ Play";
+    playBtn.disabled = recording; scrub.disabled = recording;
+    requestAnimationFrame(frame);
+  }
+
+  // keep canvases in step with size and theme changes
+  let rsT; new ResizeObserver(() => { clearTimeout(rsT); rsT = setTimeout(rebuildCaches, 60); }).observe($(".wrap"));
+  try { matchMedia("(prefers-color-scheme: dark)").addEventListener("change", rebuildCaches); } catch (e) {}
+  new MutationObserver(rebuildCaches).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(rebuildCaches);
+
+  refreshPadList();
+  setRecording(makeSample(), "<b>Sample recording</b>&nbsp;· generated example", "");
+  playhead = 4600; // open on a busy moment so the first view shows sticks, triggers and buttons in use
+  requestAnimationFrame(frame);
+})();
+</script>
