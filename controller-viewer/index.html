@@ -127,6 +127,18 @@ tr.ev.past td { color: var(--muted); }
 .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
 .help { color: var(--muted); font-size: 13px; margin: 0; max-width: 70ch; }
 .help code { font-family: var(--mono); font-size: 12px; }
+.hint { margin: 0; color: var(--muted); font-size: 13px; }
+kbd { font: 500 12px var(--mono); color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; }
+.libhead { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 12px; }
+.libhead .meta { font-size: 12px; color: var(--muted); }
+.lib { display: grid; }
+.libitem { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 0; border-bottom: 1px solid var(--grid); }
+.libitem .nm { flex: 1 1 200px; min-width: 0; font-weight: 500; overflow-wrap: anywhere; }
+.libitem .meta { font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.libitem.cur .nm { color: var(--accent); }
+button.small { min-height: 30px; padding: 6px 10px; font-size: 12px; }
+button.danger { color: var(--rec); }
+button.danger.armed { background: var(--rec); border-color: var(--rec); color: #fff; }
 body.drag .wrap { outline: 2px dashed var(--accent); outline-offset: 8px; border-radius: 10px; }
 </style>
 
@@ -150,6 +162,7 @@ body.drag .wrap { outline: 2px dashed var(--accent); outline-offset: 8px; border
     <span class="chip"><span id="padDot" class="dot"></span><span id="padText">No controller connected</span></span>
     <select id="padSel" aria-label="Controller to record" hidden></select>
   </div>
+  <p class="hint">Start or stop recording anytime: press <kbd>R</kbd>, click Record, or hold <kbd>Back</kbd> + <kbd>Start</kbd> on the controller for half a second.</p>
   <p id="note" class="note" role="status" aria-live="polite"></p>
 
   <section class="bench">
@@ -242,6 +255,11 @@ body.drag .wrap { outline: 2px dashed var(--accent); outline-offset: 8px; border
         </table>
       </div>
     </div>
+  </section>
+
+  <section class="panel">
+    <div class="libhead"><h2>Your recordings</h2><span class="meta">Kept in this browser only</span></div>
+    <div id="lib" class="lib"></div>
   </section>
 
   <p class="help">Space plays or pauses. Left and right arrows step one frame; hold Shift to step one second. Drop a recording <code>.json</code> anywhere on the page, or paste its text. Recordings use the browser's standard controller layout, so the labels match Xbox-style pads; other pads map to the same positions.</p>
@@ -576,7 +594,8 @@ body.drag .wrap { outline: 2px dashed var(--accent); outline-offset: 8px; border
   window.addEventListener("gamepaddisconnected", () => { refreshPadList(); if (recording) stopRec(true); });
   $("#padSel").addEventListener("change", e => { padIndex = Number(e.target.value); refreshPadList(); });
 
-  function startRec() {
+  let prevRec = null, prevLabel = "", hiddenDuring = false, skipUntilRelease = false;
+  function startRec(fromCombo) {
     refreshPadList();
     const p = pads().find(x => x.index === padIndex);
     if (!p) {
@@ -586,18 +605,102 @@ body.drag .wrap { outline: 2px dashed var(--accent); outline-offset: 8px; border
       return;
     }
     recording = true; playing = false; recStart = performance.now(); lastAnalyze = 0;
-    rec = { version: 1, controller: p.id, mapping: p.mapping || "unknown", recordedAt: new Date().toISOString(), samples: [padSample(p, 0)] };
+    prevRec = rec; prevLabel = $("#srcText").innerHTML; hiddenDuring = false; skipUntilRelease = !!fromCombo;
+    rec = { version: 1, controller: p.id, mapping: p.mapping || "unknown", recordedAt: new Date().toISOString(), samples: fromCombo ? [] : [padSample(p, 0)] };
     analyze(); buildPaths(); rebuildCaches();
     $("#recBtn").textContent = "■ Stop"; $("#recBtn").classList.add("on");
     $("#srcDot").className = "dot rec";
     note(p.mapping === "standard" ? "Recording. Press Stop when you're done." : "Recording. This controller doesn't report the standard layout, so some labels may not match its buttons.");
   }
-  function stopRec(lost) {
+  function stopRec(lost, cutAt) {
     recording = false;
     $("#recBtn").textContent = "● Record"; $("#recBtn").classList.remove("on");
-    setRecording(rec, `<b>Your recording</b>&nbsp;· ${fmt(dur())}`, "ok");
-    note(lost ? "The controller disconnected, so recording stopped. What was captured is kept below." : "Recording stopped. Save it as .json to keep it; it is not stored anywhere else.", lost);
+    if (cutAt != null) { const c = cutAt - recStart; rec.samples = rec.samples.filter(x => x.t < c); }
+    if (rec.samples.length < 2) {
+      setRecording(prevRec || makeSample(), prevLabel || "<b>Sample recording</b>", "ok");
+      note("That recording was too short to keep.", true);
+      return;
+    }
+    const name = "Recording · " + new Date().toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" });
+    rec.name = name;
+    setRecording(rec, `<b>${esc(name)}</b>&nbsp;· ${fmt(dur())}`, "ok");
+    const msgs = [], warn = lost || hiddenDuring;
+    if (lost) msgs.push("The controller disconnected, so recording stopped.");
+    if (hiddenDuring) msgs.push("This page was hidden for part of the recording. Browsers don't report the controller to hidden pages, so those stretches are missing.");
+    saveToLib(rec).then(ok => {
+      msgs.push(ok ? "Saved to Your recordings." : "This view can't keep recordings, so use Save .json or Copy JSON to keep this one.");
+      note(msgs.join(" "), warn || !ok);
+    });
   }
+  document.addEventListener("visibilitychange", () => { if (recording && document.hidden) hiddenDuring = true; });
+
+  // hold Back + Start for half a second to start or stop recording
+  const comboHeld = p => !!(p && p.buttons[8] && p.buttons[9] && p.buttons[8].pressed && p.buttons[9].pressed);
+  const comboAny = p => !!(p && ((p.buttons[8] && p.buttons[8].pressed) || (p.buttons[9] && p.buttons[9].pressed)));
+  let comboSince = null, comboFired = false;
+  function handleCombo(p, now) {
+    if (comboHeld(p)) {
+      if (comboSince === null) comboSince = now;
+      if (!comboFired && now - comboSince >= 500) { comboFired = true; if (recording) stopRec(false, comboSince); else startRec(true); }
+    } else { comboSince = null; comboFired = false; }
+  }
+
+  // ---------- saved recordings (IndexedDB, this browser only) ----------
+  const esc = v => String(v).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const DB = (() => {
+    let opening = null;
+    const open = () => opening || (opening = new Promise((res, rej) => {
+      try {
+        const r = indexedDB.open("controller-replay", 1);
+        r.onupgradeneeded = () => r.result.createObjectStore("recs", { keyPath: "id" });
+        r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+      } catch (e) { rej(e); }
+    }));
+    const run = (mode, fn) => open().then(db => new Promise((res, rej) => {
+      const t = db.transaction("recs", mode), req = fn(t.objectStore("recs"));
+      t.oncomplete = () => res(req && req.result); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error);
+    }));
+    return { all: () => run("readonly", st => st.getAll()), put: v => run("readwrite", st => st.put(v)), del: id => run("readwrite", st => st.delete(id)) };
+  })();
+  let libItems = [], currentId = null, libOK = true;
+  function renderLib() {
+    const el = $("#lib");
+    if (!libOK) { el.innerHTML = `<p class="empty">This view can't keep recordings. Use Save .json or Copy JSON after you stop recording.</p>`; return; }
+    if (!libItems.length) { el.innerHTML = `<p class="empty">Nothing recorded yet. Every recording you stop is kept here automatically.</p>`; return; }
+    el.innerHTML = libItems.map(it => `<div class="libitem${it.id === currentId ? " cur" : ""}" data-id="${esc(it.id)}">
+      <span class="nm">${esc(it.name)}</span>
+      <span class="meta">${fmt(it.duration)} · ${it.presses} ${it.presses === 1 ? "press" : "presses"}</span>
+      <button type="button" class="small" data-act="open">${it.id === currentId ? "Showing" : "Open"}</button>
+      <button type="button" class="small danger" data-act="del">Delete</button></div>`).join("");
+  }
+  function loadLib() {
+    return DB.all().then(items => { libItems = (items || []).sort((a, b) => b.createdAt - a.createdAt); renderLib(); })
+      .catch(() => { libOK = false; renderLib(); });
+  }
+  function saveToLib(r) {
+    if (!libOK) return Promise.resolve(false);
+    const item = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: r.name, createdAt: Date.now(),
+      duration: dur(), presses: events.length, controller: r.controller, data: r };
+    return DB.put(item).then(() => { currentId = item.id; return loadLib(); }).then(() => libOK)
+      .catch(() => { libOK = false; renderLib(); return false; });
+  }
+  $("#lib").addEventListener("click", e => {
+    const b = e.target.closest("button"); if (!b) return;
+    const id = b.closest(".libitem").dataset.id, it = libItems.find(x => x.id === id); if (!it) return;
+    if (b.dataset.act === "open") {
+      if (recording) stopRec(false);
+      currentId = id; setRecording(it.data, `<b>${esc(it.name)}</b>&nbsp;· ${fmt(it.duration)}`, "ok"); renderLib(); note("");
+    } else if (b.dataset.act === "del") {
+      if (!b.classList.contains("armed")) {
+        b.classList.add("armed"); b.textContent = "Confirm delete";
+        setTimeout(() => { if (b.isConnected) { b.classList.remove("armed"); b.textContent = "Delete"; } }, 3000);
+        return;
+      }
+      DB.del(id).then(() => { if (currentId === id) currentId = null; return loadLib(); })
+        .then(() => note("Deleted " + it.name + "."), () => note("Couldn't delete that recording.", true));
+    }
+  });
+
   $("#recBtn").addEventListener("click", () => (recording ? stopRec(false) : startRec()));
 
   // ---------- files ----------
@@ -605,6 +708,7 @@ body.drag .wrap { outline: 2px dashed var(--accent); outline-offset: 8px; border
     try {
       const r = normalize(JSON.parse(text));
       if (recording) stopRec(false);
+      currentId = null; renderLib();
       setRecording(r, `<b>${(name || "Pasted recording").replace(/</g, "&lt;")}</b>&nbsp;· ${fmt(r.samples[r.samples.length - 1].t)}`, "ok");
       note("Loaded " + r.samples.length.toLocaleString() + " samples from " + (r.controller || "a controller") + ".");
     } catch (e) {
@@ -625,7 +729,7 @@ body.drag .wrap { outline: 2px dashed var(--accent); outline-offset: 8px; border
     const t = e.clipboardData && e.clipboardData.getData("text");
     if (t && /^\s*[\[{]/.test(t)) loadText(t, "Pasted recording");
   });
-  $("#sampleBtn").addEventListener("click", () => { if (recording) stopRec(false); setRecording(makeSample(), "<b>Sample recording</b>&nbsp;· generated example", ""); note(""); });
+  $("#sampleBtn").addEventListener("click", () => { if (recording) stopRec(false); currentId = null; renderLib(); setRecording(makeSample(), "<b>Sample recording</b>&nbsp;· generated example", ""); note(""); });
 
   const json = () => JSON.stringify(rec);
   $("#saveBtn").addEventListener("click", () => {
@@ -665,7 +769,11 @@ body.drag .wrap { outline: 2px dashed var(--accent); outline-offset: 8px; border
     playhead = Number(tr.dataset.t); playing = false;
   });
   document.addEventListener("keydown", e => {
-    if (e.target.closest("input, select, textarea") || !rec || recording) return;
+    if (e.target.closest && e.target.closest("input, select, textarea")) return;
+    if ((e.key === "r" || e.key === "R") && !e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat) {
+      e.preventDefault(); recording ? stopRec(false) : startRec(false); return;
+    }
+    if (!rec || recording) return;
     if (e.code === "Space") { e.preventDefault(); playBtn.click(); }
     else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
       e.preventDefault(); playing = false;
@@ -678,10 +786,15 @@ body.drag .wrap { outline: 2px dashed var(--accent); outline-offset: 8px; border
   function frame(now) {
     const dt = last == null ? 0 : now - last; last = now;
     let state, trail = [];
+    const live = padIndex === null ? null : pads().find(x => x.index === padIndex);
+    handleCombo(live, now);
     if (recording) {
-      const p = pads().find(x => x.index === padIndex);
-      if (p) { const s = padSample(p, now - recStart); rec.samples.push(s); state = s; }
-      else state = rec.samples[rec.samples.length - 1];
+      const p = live;
+      if (p && skipUntilRelease) {
+        // started from the controller: begin once Back and Start are let go, so the combo isn't in the recording
+        if (!comboAny(p)) { skipUntilRelease = false; recStart = now; rec.samples.push(padSample(p, 0)); }
+      } else if (p) { const s = padSample(p, now - recStart); rec.samples.push(s); state = s; }
+      if (!state) state = rec.samples[rec.samples.length - 1];
       trail = rec.samples.slice(-45);
       if (now - lastAnalyze > 300) { lastAnalyze = now; analyze(); buildPaths(); rebuildCaches(); $("#srcText").innerHTML = `<b>Recording</b>&nbsp;· ${fmt(dur())}`; }
       playhead = dur();
@@ -709,6 +822,7 @@ body.drag .wrap { outline: 2px dashed var(--accent); outline-offset: 8px; border
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(rebuildCaches);
 
   refreshPadList();
+  renderLib(); loadLib();
   setRecording(makeSample(), "<b>Sample recording</b>&nbsp;· generated example", "");
   playhead = 4600; // open on a busy moment so the first view shows sticks, triggers and buttons in use
   requestAnimationFrame(frame);
